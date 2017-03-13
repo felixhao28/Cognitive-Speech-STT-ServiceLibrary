@@ -9,12 +9,14 @@
 
 namespace SpeechClientSample
 {
+    using CognitiveServicesAuthorization;
+    using Microsoft.Bing.Speech;
     using System;
+    using System.Collections.Generic;
     using System.IO;
     using System.Threading;
     using System.Threading.Tasks;
-    using CognitiveServicesAuthorization;
-    using Microsoft.Bing.Speech;
+    using WebSocketSharp;
 
     /// <summary>
     /// This sample program shows how to use <see cref="SpeechClient"/> APIs to perform speech recognition.
@@ -131,7 +133,7 @@ namespace SpeechClientSample
         /// <returns>
         /// A task
         /// </returns>
-        public async Task Run(string audioFile, string locale, Uri serviceUrl, string subscriptionKey)
+        public async Task Run2(string audioFile, string locale, Uri serviceUrl, string subscriptionKey)
         {
             // create the preferences object
             var preferences = new Preferences(locale, serviceUrl, new CognitiveServicesAuthorizationProvider(subscriptionKey));
@@ -151,6 +153,87 @@ namespace SpeechClientSample
 
                     await speechClient.RecognizeAsync(new SpeechInput(audio, requestMetadata), this.cts.Token).ConfigureAwait(false);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Try websocket
+        /// </summary>
+        /// <param name="audioFile"></param>
+        /// <param name="locale"></param>
+        /// <param name="serviceUrl"></param>
+        /// <param name="subscriptionKey"></param>
+        /// <returns></returns>
+        public async Task Run(string audioFile, string locale, Uri serviceUrl, string subscriptionKey)
+        {
+            string auth = await new CognitiveServicesAuthorizationProvider(subscriptionKey).GetAuthorizationTokenAsync();
+
+            using (var ws = new WebSocket("wss://speech.platform.bing.com/api/service/recognition"))
+            {
+                ws.CustomHeaders = new Dictionary<string, string> {
+                    {"X-CU-LogLevel", "1"},
+                    {"X-CU-Locale", "en-US"},
+                    {"Authorization", auth},
+                    {"User-Agent", "SampleAppService (Windows;1607;Desktop;ProcessName/AppName=SampleApp/1.0.0;DeviceType=Near)"},
+                    {"Host", "speech.platform.bing.com"}
+                };
+
+                ws.OnMessage += (sender, e) =>
+                    Console.WriteLine("Laputa says: " + e.Data);
+
+                ws.Connect();
+                ws.Send(@"X-CU-ClientVersion:2.0.0
+X-CU-Locale:en-US
+X-Search-IG:9f2c48c221194eefa4c6f39d10bd8a5a
+X-CU-ConversationId:1adc3fd78ca7417bb6cb40ef183a145e
+X-LOBBY-MESSAGE-TYPE:connection.context
+
+{@Groups@:{@LocalProperties@:{@Id@:@LocalProperties@,@Info@:{@NetworkType@:@Ethernet@}}}}".Replace('@', '"'));
+                bool started = false;
+                using (var reader = new BinaryReader(File.Open(audioFile, FileMode.Open)))
+                {
+                    while (reader.BaseStream.Position != reader.BaseStream.Length)
+                    {
+                        var bytes = reader.ReadBytes(1024);
+
+                        if (!started)
+                        {
+                            //send start
+                            started = true;
+                            var header = @"X-CU-ClientVersion:2.0.0
+X-CU-Locale:en-US
+X-Search-IG:9f2c48c221194eefa4c6f39d10bd8a5a
+X-CU-ConversationId:1adc3fd78ca7417bb6cb40ef183a145e
+X-LOBBY-MESSAGE-TYPE:audio.stream.start
+";
+                            byte[] data = new byte[header.Length * sizeof(char) + bytes.Length];
+                            System.Buffer.BlockCopy(header.ToCharArray(), 0, data, 0, header.Length * sizeof(char));
+                            System.Buffer.BlockCopy(bytes, header.Length, data, header.Length, bytes.Length);
+                            ws.Send(data);
+                        }
+                        else
+                        {
+                            //send body
+                            var header = @"\x00\xB9X-CU-ClientVersion:2.0.0
+X-CU-Locale:en-US
+X-Search-IG:9f2c48c221194eefa4c6f39d10bd8a5a
+X-CU-ConversationId:1adc3fd78ca7417bb6cb40ef183a145e
+X-LOBBY-MESSAGE-TYPE:audio.stream.body
+";
+                            byte[] data = new byte[header.Length * sizeof(char) + bytes.Length];
+                            System.Buffer.BlockCopy(header.ToCharArray(), 0, data, 0, header.Length * sizeof(char));
+                            System.Buffer.BlockCopy(bytes, header.Length, data, header.Length, bytes.Length);
+                            ws.Send(data);
+                        }
+                    }
+                    ws.Send(@"\x00\xB8X-CU-ClientVersion:2.0.0
+X-CU-Locale:en-US
+X-Search-IG:9f2c48c221194eefa4c6f39d10bd8a5a
+X-CU-ConversationId:1adc3fd78ca7417bb6cb40ef183a145e
+X-LOBBY-MESSAGE-TYPE:audio.stream.end
+");
+                }
+                Console.ReadKey(true);
             }
         }
 
